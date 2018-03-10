@@ -1,0 +1,6 @@
+[package]
+name = "rustdns"
+version = "0.1.0"
+authors = ["Sanders Lauture <golf1052@msn.com>"]
+
+[dependencies]
