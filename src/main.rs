@@ -55,4 +55,32 @@ fn main() {
 
     println!("Server {}", server);
     println!("Port Number {:?}", portNumber);
+
+    dump_packet(vec![7, 72, 4, 73, 1, 1, 1, 1, 1, 1, 1, 72, 1, 1, 1, 1, 1, 72]);
+}
+
+fn dump_packet(data: Vec<u8>) {
+    let mut chars: String = String::new();
+    for (i, datum) in data.iter().enumerate() {
+        let i = i + 1;
+        print!("{:04x} ", datum);
+        chars.push(get_char(*datum));
+        if i % 16 == 0 {
+            println!("\t{}", chars);
+            chars.clear();
+        }
+    }
+
+    if chars.len() != 0 {
+        println!("{}", chars);
+    }
+}
+
+fn get_char(datum: u8) -> char {
+    let c: char = datum as char;
+    if c.is_alphanumeric() {
+        c
+    } else {
+        '.'
+    }
 }
