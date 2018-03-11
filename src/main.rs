@@ -71,6 +71,7 @@ fn main() {
     socket.send(&question[..]).expect("Send failed");
     let mut buf = [0; 65535];
     let received = socket.recv(&mut buf).expect("Receive failed");
+    println!("Received {} bytes", received);
     let raw_answer = &buf[..received];
     dump_packet(raw_answer);
 }
