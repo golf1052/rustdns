@@ -73,7 +73,10 @@ fn main() {
     let received = socket.recv(&mut buf).expect("Receive failed");
     println!("Received {} bytes", received);
     let raw_answer = &buf[..received];
-    dump_packet(raw_answer);
+    // dump_packet(raw_answer);
+
+    let expanded_answer = unpointerfy(raw_answer);
+    dump_packet(expanded_answer.as_slice());
 }
 
 fn create_question(name: &str) -> Vec<u8> {
@@ -135,6 +138,73 @@ fn name_to_dns_name(name: &str) -> Vec<u8> {
     dns_name
 }
 
+fn unpointerfy(data: &[u8]) -> Vec<u8> {
+    let mut expanded_data: Vec<u8> = Vec::new();
+    let mut i: usize = 0;
+    while i < data.len() {
+        let datum: u8 = data[i];
+        if (datum & 0xc0) == 0xc0 {
+            // found a pointer, follow it
+            let o: u8 = data[i + 1];
+            pointer_follower(&mut expanded_data, o, i as u16);
+        } else {
+            expanded_data.push(datum);
+        }
+        i += 1;
+    }
+    expanded_data
+}
+
+fn pointer_follower(data: &mut Vec<u8>, offset: u8, pointer_index: u16) {
+    let mut found_data: Vec<u8> = Vec::new();
+    let mut i: usize = offset as usize;
+    while i < data.len() {
+        let datum: u8 = data[i];
+        if datum == 0 {
+            found_data.push(datum);
+            replace_pointer(data, found_data.as_slice(), pointer_index);
+            return;
+        } else if datum & 0xc0 == 0xc0 {
+            if found_data.len() > 0 {
+                replace_pointer(data, found_data.as_slice(), pointer_index);
+                // not correctly getting last 6 bits of pointer...
+                let o: u8 = data[i + 1];
+                pointer_follower(data, o, i as u16);
+            } else {
+                panic!("This probably shouldn't happen");
+            }
+        } else {
+            found_data.push(datum);
+        }
+        i += 1;
+    }
+}
+
+fn replace_pointer(data: &mut Vec<u8>, to_replace: &[u8], mut index: u16) {
+    for datum in to_replace {
+        data.insert(index as usize, *datum);
+        index += 1;
+    }
+}
+
+fn dns_name_to_name(dns_name: &[u8]) -> String {
+    let mut name: String = String::new();
+    let mut length: u8 = 0;
+    for byte in dns_name {
+        if length == 0 {
+            if name.len() > 0 {
+                name.push('.');
+            }
+            length = *byte;
+            continue;
+        } else {
+            name.push(*byte as char);
+            length -= 1;
+        }
+    }
+    name
+}
+
 fn dump_packet(data: &[u8]) {
     let mut chars: String = String::new();
     for (i, datum) in data.iter().enumerate() {
@@ -160,5 +230,17 @@ fn get_char(datum: u8) -> char {
         c
     } else {
         '.'
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_dns_name_to_name() {
+        let name: String =
+            dns_name_to_name(vec![8, 103, 111, 108, 102, 49, 48, 53, 50, 3, 99, 111, 109]);
+        assert_eq!("golf1052.com", name);
     }
 }

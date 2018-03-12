@@ -10,9 +10,14 @@
             "request": "launch",
             "program": "${workspaceFolder}/target/debug/rustdns.exe",
             "args": [],
-            "stopAtEntry": false,
+            "stopAtEntry": true,
             "cwd": "${workspaceFolder}",
-            "environment": [],
+            "environment": [
+                {
+                    "name": "RUST_BACKTRACE",
+                    "value": "1"
+                }
+            ],
             "externalConsole": true
         }
     ]
