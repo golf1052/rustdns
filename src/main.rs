@@ -1,7 +1,9 @@
 use std::env;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::str::FromStr;
+use std::process;
 
+#[derive(Debug)]
 struct Header {
     id: u16,
     qr: u8,     // 1 bit
@@ -75,8 +77,43 @@ fn main() {
     let raw_answer = &buf[..received];
     // dump_packet(raw_answer);
 
-    let expanded_answer = unpointerfy(raw_answer);
-    dump_packet(expanded_answer.as_slice());
+    let answer_header = get_header(raw_answer);
+    if answer_header.id != 1337 {
+        panic!(
+            "Answer id ({}) did not match requested id",
+            answer_header.id
+        );
+    }
+
+    if answer_header.qr != 1 {
+        panic!("Answer is not a response");
+    }
+
+    if answer_header.tc == 1 {
+        panic!("Answer was truncated");
+    }
+
+    if answer_header.ra != 1 {
+        panic!("DNS server does not support recursion");
+    }
+
+    if answer_header.rcode == 1 {
+        println!("ERROR\tFormat error - The name server was unable to interpret the query.");
+        process::exit(0);
+    } else if answer_header.rcode == 2 {
+        println!("ERROR\tServer failure - The name server was unable to process this query due to a problem with the name server.");
+        process::exit(0);
+    } else if answer_header.rcode == 3 {
+        println!("NOTFOUND");
+        process::exit(0);
+    } else if answer_header.rcode == 4 {
+        println!("ERROR\tNot Implemented - The name server does not support the requested kind of query.");
+        process::exit(0);
+    } else if answer_header.rcode == 5 {
+        println!("ERROR\tRefused - The name server refuses to perform the specified operation for policy reasons.");
+        process::exit(0);
+    }
+    println!("{:?}", answer_header);
 }
 
 fn create_question(name: &str) -> Vec<u8> {
@@ -138,6 +175,33 @@ fn name_to_dns_name(name: &str) -> Vec<u8> {
     dns_name
 }
 
+fn get_header(data: &[u8]) -> Header {
+    Header {
+        id: to_u16(&data[0..2]),
+        qr: (data[2] & 0x80) >> 7,
+        opcode: (data[2] & 0x78) >> 3,
+        aa: (data[2] & 0x8) >> 3,
+        tc: (data[2] & 0x2) >> 1,
+        rd: data[2] & 0x1,
+        ra: (data[3] & 0x80) >> 7,
+        z: (data[3] & 0x70) >> 4,
+        rcode: data[3] & 0xF,
+        qdcount: to_u16(&data[4..6]),
+        ancount: to_u16(&data[6..8]),
+        nscount: to_u16(&data[8..10]),
+        arcount: to_u16(&data[10..12]),
+    }
+}
+
+fn to_u16(bytes: &[u8]) -> u16 {
+    let mut value: u16 = 0;
+    for byte in bytes {
+        value <<= 8;
+        value |= *byte as u16 & 0xff;
+    }
+    value
+}
+
 fn unpointerfy(data: &[u8]) -> Vec<u8> {
     let mut expanded_data: Vec<u8> = Vec::new();
     let mut i: usize = 0;
@@ -161,11 +225,13 @@ fn pointer_follower(data: &mut Vec<u8>, offset: u8, pointer_index: u16) {
     while i < data.len() {
         let datum: u8 = data[i];
         if datum == 0 {
+            println!("Finished following pointer");
             found_data.push(datum);
             replace_pointer(data, found_data.as_slice(), pointer_index);
             return;
         } else if datum & 0xc0 == 0xc0 {
             if found_data.len() > 0 {
+                println!("Found pointer at end of sequence");
                 replace_pointer(data, found_data.as_slice(), pointer_index);
                 // not correctly getting last 6 bits of pointer...
                 let o: u8 = data[i + 1];
@@ -181,6 +247,7 @@ fn pointer_follower(data: &mut Vec<u8>, offset: u8, pointer_index: u16) {
 }
 
 fn replace_pointer(data: &mut Vec<u8>, to_replace: &[u8], mut index: u16) {
+    println!("replace_pointer( {} )", String::from_utf8_lossy(to_replace));
     for datum in to_replace {
         data.insert(index as usize, *datum);
         index += 1;
@@ -239,8 +306,14 @@ mod test {
 
     #[test]
     fn test_dns_name_to_name() {
-        let name: String =
-            dns_name_to_name(vec![8, 103, 111, 108, 102, 49, 48, 53, 50, 3, 99, 111, 109]);
+        let vec: Vec<u8> = vec![8, 103, 111, 108, 102, 49, 48, 53, 50, 3, 99, 111, 109];
+        let name: String = dns_name_to_name(&vec);
         assert_eq!("golf1052.com", name);
+    }
+
+    #[test]
+    fn test_to_u16() {
+        let vec: Vec<u8> = vec![0x5, 0x39];
+        assert_eq!(1337, to_u16(&vec));
     }
 }
