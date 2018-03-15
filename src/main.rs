@@ -2,6 +2,12 @@ use std::env;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::str::FromStr;
 use std::process;
+use std::fmt::Write;
+use std::time::Duration;
+
+const DEFAULT_PORT: u16 = 53;
+const DEFAULT_ID: u16 = 1337;
+const HEADER_SIZE: usize = 12;
 
 #[derive(Debug)]
 struct Header {
@@ -20,12 +26,14 @@ struct Header {
     arcount: u16,
 }
 
+#[derive(Debug)]
 struct Question {
     qname: Vec<u8>,
     qtype: u16,
     qclass: u16,
 }
 
+#[derive(Debug)]
 struct Answer {
     name: Vec<u8>,
     _type: u16,
@@ -46,7 +54,7 @@ fn main() {
     let colon_index = server_port.find(':');
 
     let port_number: u16 = match colon_index {
-        None => 53,
+        None => DEFAULT_PORT,
         Some(i) => server_port[i + 1..]
             .parse::<u16>()
             .expect("Port number wasn't actually a valid port number"),
@@ -57,8 +65,8 @@ fn main() {
         Some(i) => &server_port[..i],
     };
 
-    println!("Server {}", server);
-    println!("Port Number {:?}", port_number);
+    // println!("Server {}", server);
+    // println!("Port Number {:?}", port_number);
 
     let question = create_question(name);
 
@@ -68,17 +76,29 @@ fn main() {
     // bind to any address on our machine
     let socket = UdpSocket::bind("0.0.0.0:0").expect("Couldn't bind to address");
     socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set_read_timeout call failed");
+    socket
         .connect(socket_addr)
         .expect("Could not connect to server");
     socket.send(&question[..]).expect("Send failed");
     let mut buf = [0; 65535];
-    let received = socket.recv(&mut buf).expect("Receive failed");
-    println!("Received {} bytes", received);
+    let received = match socket.recv(&mut buf) {
+        Ok(received) => received,
+        Err(_) => {
+            println!("NORESPONSE");
+            process::exit(0);
+        }
+    };
+
+    // println!("Received {} bytes", received);
     let raw_answer = &buf[..received];
     // dump_packet(raw_answer);
 
     let answer_header = get_header(raw_answer);
-    if answer_header.id != 1337 {
+    // println!("{:?}", answer_header);
+
+    if answer_header.id != DEFAULT_ID {
         panic!(
             "Answer id ({}) did not match requested id",
             answer_header.id
@@ -113,12 +133,39 @@ fn main() {
         println!("ERROR\tRefused - The name server refuses to perform the specified operation for policy reasons.");
         process::exit(0);
     }
-    println!("{:?}", answer_header);
+
+    let answer_question = get_question(raw_answer);
+    // println!("{:?}", answer_question);
+
+    let mut answer_start = (HEADER_SIZE + answer_question.qname.len() + 4) as usize;
+
+    let answers = get_answer(raw_answer, answer_header.ancount, answer_start);
+    // println!("{:?}", answers);
+
+    let auth = if answer_header.aa == 0 {
+        "nonauth"
+    } else {
+        "auth"
+    };
+
+    for answer in answers {
+        if answer._type == 1 {
+            println!("IP\t{}\t{}", get_ip(&answer.rdata), auth);
+        } else if answer._type == 5 {
+            println!(
+                "CNAME\t{}\t{}",
+                unpointerfy(raw_answer, answer_start, answer.rdlength),
+                auth
+            );
+        }
+
+        answer_start = answer.name.len() + 2 + 2 + 4 + 2 + answer.rdata.len();
+    }
 }
 
 fn create_question(name: &str) -> Vec<u8> {
     let header = Header {
-        id: 1337,
+        id: DEFAULT_ID,
         qr: 0,
         opcode: 0,
         aa: 0,
@@ -193,6 +240,64 @@ fn get_header(data: &[u8]) -> Header {
     }
 }
 
+fn get_question(data: &[u8]) -> Question {
+    let mut end_of_name: usize = 0;
+    for i in HEADER_SIZE..data.len() {
+        if data[i] == 0 {
+            end_of_name = i + 1;
+            break;
+        }
+    }
+
+    Question {
+        qname: data[HEADER_SIZE..end_of_name].to_vec(),
+        qtype: to_u16(&data[end_of_name..end_of_name + 2]),
+        qclass: to_u16(&data[end_of_name + 2..end_of_name + 4]),
+    }
+}
+
+fn get_answer(data: &[u8], num_answers: u16, beginning_of_answer: usize) -> Vec<Answer> {
+    let mut answers: Vec<Answer> = Vec::new();
+    let mut answer_start: usize = beginning_of_answer;
+    for _ in 0..num_answers {
+        let mut end_of_name: usize = 0;
+        for i in answer_start..data.len() {
+            if data[i] == 0 {
+                end_of_name = i;
+                break;
+            }
+        }
+
+        let rdlength = to_u16(&data[end_of_name + 8..end_of_name + 10]);
+
+        answers.push(Answer {
+            name: data[answer_start..end_of_name].to_vec(),
+            _type: to_u16(&data[end_of_name..end_of_name + 2]),
+            class: to_u16(&data[end_of_name + 2..end_of_name + 4]),
+            ttl: to_u32(&data[end_of_name + 4..end_of_name + 8]),
+            rdlength: rdlength,
+            rdata: data[end_of_name + 10..end_of_name + 10 + rdlength as usize].to_vec(),
+        });
+
+        answer_start =
+            answer_start + (end_of_name - answer_start) + 2 + 2 + 4 + 2 + rdlength as usize;
+    }
+
+    answers
+}
+
+fn get_ip(rdata: &[u8]) -> String {
+    let mut ip = String::new();
+    for i in 0..rdata.len() {
+        if i != rdata.len() - 1 {
+            write!(&mut ip, "{}.", rdata[i]).expect("Couldn't write to string");
+        } else {
+            write!(&mut ip, "{}", rdata[i]).expect("Couldn't write to string");
+        }
+    }
+    ip
+}
+
 fn to_u16(bytes: &[u8]) -> u16 {
     let mut value: u16 = 0;
     for byte in bytes {
@@ -202,40 +307,41 @@ fn to_u16(bytes: &[u8]) -> u16 {
     value
 }
 
-fn unpointerfy(data: &[u8]) -> Vec<u8> {
-    let mut expanded_data: Vec<u8> = Vec::new();
-    let mut i: usize = 0;
-    while i < data.len() {
-        let datum: u8 = data[i];
-        if (datum & 0xc0) == 0xc0 {
-            // found a pointer, follow it
-            let o: u8 = data[i + 1];
-            pointer_follower(&mut expanded_data, o, i as u16);
-        } else {
-            expanded_data.push(datum);
-        }
-        i += 1;
+fn to_u32(bytes: &[u8]) -> u32 {
+    let mut value: u32 = 0;
+    for byte in bytes {
+        value <<= 8;
+        value |= *byte as u32 & 0xff;
     }
-    expanded_data
+    value
 }
 
-fn pointer_follower(data: &mut Vec<u8>, offset: u8, pointer_index: u16) {
+fn unpointerfy(data: &[u8], pointer_index: usize, rdlength: u16) -> String {
     let mut found_data: Vec<u8> = Vec::new();
+    for i in pointer_index..pointer_index + rdlength as usize {
+        let datum = data[i];
+        if datum & 0xc0 == 0xc0 {
+            let offset = to_u16(&vec![datum & 0x30, data[i + 1]]);
+            found_data = pointer_follower(data, offset, found_data);
+        } else if datum == 0 {
+            found_data.push(datum);
+            break;
+        }
+    }
+    dns_name_to_name(&found_data)
+}
+
+fn pointer_follower(data: &[u8], offset: u16, mut found_data: Vec<u8>) -> Vec<u8> {
     let mut i: usize = offset as usize;
     while i < data.len() {
         let datum: u8 = data[i];
         if datum == 0 {
-            println!("Finished following pointer");
-            found_data.push(datum);
-            replace_pointer(data, found_data.as_slice(), pointer_index);
-            return;
+            return found_data;
         } else if datum & 0xc0 == 0xc0 {
             if found_data.len() > 0 {
                 println!("Found pointer at end of sequence");
-                replace_pointer(data, found_data.as_slice(), pointer_index);
-                // not correctly getting last 6 bits of pointer...
-                let o: u8 = data[i + 1];
-                pointer_follower(data, o, i as u16);
+                let offset: u16 = to_u16(&vec![datum & 0x30, data[i + 1]]);
+                found_data = pointer_follower(data, offset, found_data);
             } else {
                 panic!("This probably shouldn't happen");
             }
@@ -244,14 +350,8 @@ fn pointer_follower(data: &mut Vec<u8>, offset: u8, pointer_index: u16) {
         }
         i += 1;
     }
-}
 
-fn replace_pointer(data: &mut Vec<u8>, to_replace: &[u8], mut index: u16) {
-    println!("replace_pointer( {} )", String::from_utf8_lossy(to_replace));
-    for datum in to_replace {
-        data.insert(index as usize, *datum);
-        index += 1;
-    }
+    found_data
 }
 
 fn dns_name_to_name(dns_name: &[u8]) -> String {
@@ -315,5 +415,11 @@ mod test {
     fn test_to_u16() {
         let vec: Vec<u8> = vec![0x5, 0x39];
         assert_eq!(1337, to_u16(&vec));
+    }
+
+    #[test]
+    fn test_to_u32() {
+        let vec: Vec<u8> = vec![0xF, 0x42, 0x40];
+        assert_eq!(1000000, to_u32(&vec));
     }
 }
