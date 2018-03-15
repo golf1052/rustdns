@@ -84,7 +84,12 @@ fn main() {
     socket.send(&question[..]).expect("Send failed");
     let mut buf = [0; 65535];
     let received = match socket.recv(&mut buf) {
-        Ok(received) => received,
+        Ok(received) => if received == 0 {
+            println!("ERROR\tFailed to receive packet");
+            process::exit(0);
+        } else {
+            received
+        },
         Err(_) => {
             println!("NORESPONSE");
             process::exit(0);
