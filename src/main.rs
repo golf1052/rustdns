@@ -267,8 +267,13 @@ fn get_answer(data: &[u8], num_answers: u16, beginning_of_answer: usize) -> Vec<
     for _ in 0..num_answers {
         let mut end_of_name: usize = 0;
         for i in answer_start..data.len() {
+            if data[i] & 0xc0 == 0xc0 {
+                // i is the pointer, i + 1 is the length
+                end_of_name = i + 2;
+                break;
+            }
             if data[i] == 0 {
-                end_of_name = i;
+                end_of_name = i + 1;
                 break;
             }
         }
